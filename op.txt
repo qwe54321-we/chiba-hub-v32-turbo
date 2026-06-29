@@ -1,0 +1,379 @@
+-- [[ CHIBA HUB GOD : V32 TURBO 🚀 (RAW LOCK EXCLUSIVE PHYSICS) + 👻 INVISIBLE ]]
+-- 🛡️ UI: แคปซูลไร้ขอบ | 🔘 TP: ปุ่มลอยน้ำ 3 สถานะ
+-- ⚔️ Combat: Smart Lock (มี Ghost Target) / Raw Lock (ปิด Ghost Target ชนดิบๆ)
+-- 👁️ Visual: Global X-Ray ESP | ⚙️ Misc: Anti-Fling V2, Visible Hitbox, ล่องหน
+
+local TS = game:GetService("TweenService")
+local UIS = game:GetService("UserInputService")
+local RS = game:GetService("RunService")
+local Players = game:GetService("Players")
+local lp = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+
+-- [ 🧹 ล้างขยะระบบเก่า ]
+local guiParent = pcall(function() return gethui() end) and gethui() or lp:WaitForChild("PlayerGui")
+for _, v in pairs(guiParent:GetChildren()) do if v:IsA("ScreenGui") and v.Name:match("Chiba") then v:Destroy() end end
+local sg = Instance.new("ScreenGui", guiParent); sg.Name = "ChibaGod_V32Turbo"
+
+-- [ 🎨 UI THEME (No Border) ]
+local bgDark = Color3.fromRGB(20, 20, 22); local accentRed = Color3.fromRGB(255, 50, 50)
+local mainW, mainH = 230, 280
+
+local topBar = Instance.new("Frame", sg)
+topBar.Size = UDim2.new(0, mainW, 0, 35); topBar.Position = UDim2.new(0.5, -mainW/2, 0, 50)
+topBar.BackgroundColor3 = bgDark; topBar.Active = true; topBar.BorderSizePixel = 0
+Instance.new("UICorner", topBar).CornerRadius = UDim.new(0, 8)
+
+local title = Instance.new("TextLabel", topBar)
+title.Size = UDim2.new(1, -40, 1, 0); title.Position = UDim2.new(0, 15, 0, 0); title.BackgroundTransparency = 1
+title.Text = "CHIBA HUB GOD | ...ms"; title.TextColor3 = Color3.new(1,1,1); title.Font = Enum.Font.GothamBold; title.TextSize = 11; title.TextXAlignment = Enum.TextXAlignment.Left
+
+local currentPing = 0
+task.spawn(function()
+    while task.wait(1) do pcall(function() currentPing = math.floor(lp:GetNetworkPing() * 1000); title.Text = "CHIBA HUB GOD | " .. currentPing .. "ms" end) end
+end)
+
+local toggleBtn = Instance.new("TextButton", topBar)
+toggleBtn.Size = UDim2.new(0, 35, 1, 0); toggleBtn.Position = UDim2.new(1, -35, 0, 0); toggleBtn.BackgroundTransparency = 1
+toggleBtn.Text = "+"; toggleBtn.TextColor3 = accentRed; toggleBtn.Font = Enum.Font.GothamBold; toggleBtn.TextSize = 18
+
+local main = Instance.new("Frame", topBar)
+main.Size = UDim2.new(1, 0, 0, 0); main.Position = UDim2.new(0, 0, 1, 5); main.BackgroundColor3 = bgDark; main.ClipsDescendants = true; main.Visible = false
+main.BorderSizePixel = 0; Instance.new("UICorner", main).CornerRadius = UDim.new(0, 8)
+
+local tabContainer = Instance.new("Frame", main)
+tabContainer.Size = UDim2.new(1, 0, 0, 30); tabContainer.BackgroundTransparency = 1
+Instance.new("UIListLayout", tabContainer).FillDirection = Enum.FillDirection.Horizontal
+
+local content = Instance.new("Frame", main)
+content.Size = UDim2.new(1, 0, 1, -30); content.Position = UDim2.new(0, 0, 0, 30); content.BackgroundTransparency = 1
+
+local isMainOpen = false
+toggleBtn.Activated:Connect(function()
+    isMainOpen = not isMainOpen; toggleBtn.Text = isMainOpen and "-" or "+"
+    main.Visible = true; TS:Create(main, TweenInfo.new(0.2), {Size = UDim2.new(1, 0, 0, isMainOpen and mainH or 0)}):Play()
+end)
+
+local drag, dStart, sPos
+topBar.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then drag = true; dStart = i.Position; sPos = topBar.Position end end)
+UIS.InputChanged:Connect(function(i) if drag and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then topBar.Position = UDim2.new(sPos.X.Scale, sPos.X.Offset + (i.Position - dStart).X, sPos.Y.Scale, sPos.Y.Offset + (i.Position - dStart).Y) end end)
+UIS.InputEnded:Connect(function() drag = false end)
+
+-- [ 📋 TAB SYSTEM ]
+local function AddTab(name)
+    local btn = Instance.new("TextButton", tabContainer); btn.Size = UDim2.new(0.33, 0, 1, 0); btn.BackgroundTransparency = 1
+    btn.Text = name; btn.TextColor3 = Color3.fromRGB(150,150,150); btn.Font = Enum.Font.GothamBold; btn.TextSize = 9
+    local page = Instance.new("ScrollingFrame", content); page.Size = UDim2.new(1, -16, 1, -10); page.Position = UDim2.new(0, 8, 0, 5); page.BackgroundTransparency = 1; page.ScrollBarThickness = 0; page.Visible = false
+    Instance.new("UIListLayout", page).Padding = UDim.new(0, 5)
+    btn.Activated:Connect(function()
+        for _, p in pairs(content:GetChildren()) do p.Visible = false end
+        for _, t in pairs(tabContainer:GetChildren()) do if t:IsA("TextButton") then t.TextColor3 = Color3.fromRGB(150,150,150) end end
+        page.Visible = true; btn.TextColor3 = Color3.new(1,1,1)
+    end)
+    if #tabContainer:GetChildren() == 2 then page.Visible = true; btn.TextColor3 = Color3.new(1,1,1) end
+    return page
+end
+
+local function CreateToggle(parent, text, callback)
+    local btn = Instance.new("TextButton", parent); btn.Size = UDim2.new(1, 0, 0, 30); btn.BackgroundColor3 = Color3.fromRGB(30,30,35)
+    btn.Text = " [ OFF ] " .. text; btn.TextColor3 = Color3.fromRGB(150,150,150); btn.Font = Enum.Font.GothamBold; btn.TextSize = 9; btn.TextXAlignment = Enum.TextXAlignment.Left
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4); btn.BorderSizePixel = 0
+    local state = false
+    btn.Activated:Connect(function()
+        state = not state; btn.Text = (state and " [ ON ] " or " [ OFF ] ") .. text; btn.TextColor3 = (state and accentRed or Color3.fromRGB(150,150,150))
+        task.spawn(function() pcall(callback, state) end)
+    end)
+end
+
+-- [ 🆕 เพิ่มฟังก์ชันสร้างปุ่มกดครั้งเดียว (สำหรับรันล่องหน) ]
+local function CreateButton(parent, text, callback)
+    local btn = Instance.new("TextButton", parent); btn.Size = UDim2.new(1, 0, 0, 30); btn.BackgroundColor3 = Color3.fromRGB(40,30,50)
+    btn.Text = " [ 👁️ ] " .. text; btn.TextColor3 = Color3.fromRGB(0, 255, 150); btn.Font = Enum.Font.GothamBold; btn.TextSize = 9; btn.TextXAlignment = Enum.TextXAlignment.Left
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4); btn.BorderSizePixel = 0
+    btn.Activated:Connect(function()
+        btn.Text = " [ ⏳ ] Running..."
+        task.spawn(function() pcall(callback) end)
+        task.wait(1)
+        btn.Text = " [ 👁️ ] " .. text
+    end)
+end
+
+-- ==========================================
+-- ⚙️ ENGINE CORE
+-- ==========================================
+local tabCombat = AddTab("⚔️ COMBAT"); local tabVisual = AddTab("👁️ VISUAL"); local tabMisc = AddTab("⚙️ MISC")
+local AutoNearest, RawLock, TapLock, ESPState, HitboxState, AntiFling, InfJump, ClickTP = false, false, false, false, false, false, false, false
+local ActiveTarget, TappedTarget = nil, nil
+local TeamList, clickData = {}, {}
+
+CreateToggle(tabCombat, "Smart Lock Nearest", function(v) AutoNearest = v end)
+CreateToggle(tabCombat, "Raw Lock (ดิบ/ตามขึ้นฟ้า)", function(v) RawLock = v end)
+CreateToggle(tabCombat, "Tap Lock (2-Tap)", function(v) TapLock = v end)
+CreateToggle(tabCombat, "Smart Giant Hitbox", function(v) HitboxState = v end)
+
+-- [ 🔘 TP BUTTON ]
+local warpBtnState = 0; local fWarpBtn, dConn1, dConn2, dConn3
+local function RemoveWarpBtn() if fWarpBtn then fWarpBtn:Destroy() fWarpBtn = nil end; if dConn1 then dConn1:Disconnect() end; if dConn2 then dConn2:Disconnect() end; if dConn3 then dConn3:Disconnect() end end
+local function CreateWarpBtn()
+    RemoveWarpBtn(); fWarpBtn = Instance.new("TextButton", sg)
+    fWarpBtn.Size = UDim2.new(0, 55, 0, 55); fWarpBtn.Position = UDim2.new(0.8, 0, 0.6, 0); fWarpBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 50)
+    fWarpBtn.Text = "TP\n[DRAG]"; fWarpBtn.TextColor3 = Color3.new(1,1,1); fWarpBtn.Font = Enum.Font.GothamBold; fWarpBtn.TextSize = 10; fWarpBtn.BorderSizePixel = 0; Instance.new("UICorner", fWarpBtn).CornerRadius = UDim.new(1, 0)
+    fWarpBtn.Activated:Connect(function()
+        if ActiveTarget and lp.Character and lp.Character:FindFirstChild("HumanoidRootPart") then
+            local tHRP = ActiveTarget.Character:FindFirstChild("HumanoidRootPart")
+            if tHRP then lp.Character.HumanoidRootPart.CFrame = tHRP.CFrame * CFrame.new(0, 0, 3) end
+        end
+    end)
+    local btnDrag, btnDStart, btnSPos
+    dConn1 = fWarpBtn.InputBegan:Connect(function(i) if warpBtnState == 1 and (i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch) then btnDrag = true; btnDStart = i.Position; btnSPos = fWarpBtn.Position end end)
+    dConn2 = UIS.InputChanged:Connect(function(i) if btnDrag and warpBtnState == 1 and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then fWarpBtn.Position = UDim2.new(btnSPos.X.Scale, btnSPos.X.Offset + (i.Position - btnDStart).X, btnSPos.Y.Scale, btnSPos.Y.Offset + (i.Position - btnDStart).Y) end end)
+    dConn3 = fWarpBtn.InputEnded:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then btnDrag = false end end)
+end
+
+local menuWarpBtn = Instance.new("TextButton", tabCombat)
+menuWarpBtn.Size = UDim2.new(1, 0, 0, 30); menuWarpBtn.BackgroundColor3 = Color3.fromRGB(30,30,35); menuWarpBtn.BorderSizePixel = 0
+menuWarpBtn.Text = " [ OFF ] Float TP Button"; menuWarpBtn.TextColor3 = Color3.fromRGB(150,150,150); menuWarpBtn.Font = Enum.Font.GothamBold; menuWarpBtn.TextSize = 9; menuWarpBtn.TextXAlignment = Enum.TextXAlignment.Left
+Instance.new("UICorner", menuWarpBtn).CornerRadius = UDim.new(0, 4)
+menuWarpBtn.Activated:Connect(function()
+    warpBtnState = (warpBtnState + 1) % 3
+    if warpBtnState == 1 then menuWarpBtn.Text = " [ 🟢 DRAG ] Float TP Button"; menuWarpBtn.TextColor3 = Color3.fromRGB(0, 200, 50); CreateWarpBtn()
+    elseif warpBtnState == 2 then menuWarpBtn.Text = " [ 🔴 LOCK ] Float TP Button"; menuWarpBtn.TextColor3 = accentRed; if fWarpBtn then fWarpBtn.BackgroundColor3 = accentRed; fWarpBtn.Text = "TP\n[LOCK]" end
+    else menuWarpBtn.Text = " [ OFF ] Float TP Button"; menuWarpBtn.TextColor3 = Color3.fromRGB(150,150,150); RemoveWarpBtn() end
+end)
+
+-- ─────────────────────────────────────────────────────────
+-- 👁️ TOGGLE เชื่อมกับระบบ ESP ใหม่ด้านล่าง (เปลี่ยนจากอันเดิม)
+-- ─────────────────────────────────────────────────────────
+CreateToggle(tabVisual, "Global X-Ray ESP", function(v)
+    ESPState = v
+    if v then espEnable() else espDisable() end
+end)
+
+CreateToggle(tabMisc, "Anti-Fling Engine", function(v) AntiFling = v end)
+CreateToggle(tabMisc, "Infinite Jump", function(v) InfJump = v end)
+CreateToggle(tabMisc, "Click TP (Bypass)", function(v) ClickTP = v end)
+
+-- [ 👻 ยัดปุ่มรันวิชาล่องหนไว้ในแท็บ MISC ]
+CreateButton(tabMisc, "Run Invisible Script", function()
+    loadstring(game:HttpGet("https://rawscripts.net/raw/Universal-Script-Invisible-script-20557"))()
+end)
+
+-- ==========================================
+-- 👁️ ESP SYSTEM — Event-Driven (ใหม่)
+-- แก้ปัญหา: เปิด/ปิดไม่ค้าง, respawn เจอทันที,
+--           player เข้า-ออกแมพเจอทันที, ไม่ทิ้งซาก
+-- ==========================================
+local _espStore = {}  -- [player] = { hl }
+local _espConns = {}  -- [player] = { charAddedConn, charRemovingConn }
+
+local function espDestroyOne(player)
+    local d = _espStore[player]
+    if not d then return end
+    pcall(function() d.hl:Destroy() end)
+    _espStore[player] = nil
+end
+
+local function espBuildOne(player, char)
+    espDestroyOne(player)   -- ล้างของเก่าก่อนเสมอ ไม่ซ้อน
+    if not char then return end
+    local root = char:WaitForChild("HumanoidRootPart", 8)
+    if not root then return end
+
+    local hl = Instance.new("Highlight")
+    hl.Name                = "ChibaHighlight"
+    hl.Adornee             = char
+    hl.DepthMode           = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.FillColor           = Color3.fromRGB(255, 50, 50)
+    hl.FillTransparency    = 0.5
+    hl.OutlineColor        = Color3.fromRGB(100, 0, 0)
+    hl.OutlineTransparency = 0
+    hl.Enabled             = true
+    hl.Parent              = char
+
+    _espStore[player] = { hl = hl }
+end
+
+local function espSetupPlayer(p)
+    if p == lp or _espConns[p] then return end  -- guard: ไม่ setup ซ้ำ
+
+    -- ฟัง event ตลอด ไม่ว่า ESP จะเปิดหรือปิด
+    local c1 = p.CharacterAdded:Connect(function(char)
+        if ESPState then task.defer(espBuildOne, p, char) end
+    end)
+    local c2 = p.CharacterRemoving:Connect(function()
+        espDestroyOne(p)
+    end)
+    _espConns[p] = { c1, c2 }
+
+    -- ถ้า ESP เปิดอยู่แล้วและ player มี char แล้ว → สร้างเลย
+    if ESPState and p.Character then
+        espBuildOne(p, p.Character)
+    end
+end
+
+local function espTeardownPlayer(p)
+    local cs = _espConns[p]
+    if cs then
+        for _, c in ipairs(cs) do c:Disconnect() end
+        _espConns[p] = nil
+    end
+    espDestroyOne(p)
+end
+
+-- ── PUBLIC: ถูกเรียกจาก Toggle ด้านบน ─────────────────────
+function espEnable()
+    -- สร้าง ESP ให้ทุกคนที่อยู่ในเกมตอนนี้
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= lp and p.Character then
+            espBuildOne(p, p.Character)
+        end
+    end
+end
+
+function espDisable()
+    -- ลบทุกอย่างออกให้หมด ไม่ทิ้งซากไว้เลย
+    for p in pairs(_espStore) do
+        espDestroyOne(p)
+    end
+    table.clear(_espStore)
+end
+
+-- ── Event: player เข้า/ออกเกม ──────────────────────────────
+Players.PlayerAdded:Connect(espSetupPlayer)
+Players.PlayerRemoving:Connect(espTeardownPlayer)
+
+-- setup ผู้เล่นที่อยู่ในเกมอยู่แล้ว (กรณีสคริปต์รันทีหลัง)
+for _, p in ipairs(Players:GetPlayers()) do
+    espSetupPlayer(p)
+end
+
+-- ── Throttled update: อัปเดตสีตาม context (~8fps ประหยัด CPU มือถือ) ──
+local _espTick = 0
+RS.Heartbeat:Connect(function()
+    if not ESPState then return end  -- หยุดทันทีถ้าปิด ESP
+    local now = tick()
+    if now - _espTick < 0.12 then return end
+    _espTick = now
+
+    for player, d in pairs(_espStore) do
+        -- player ออกจากเกมไปแล้ว
+        if not player.Parent then espDestroyOne(player); continue end
+
+        local char = player.Character
+        if not char or not char.Parent then
+            d.hl.Enabled = false; continue
+        end
+
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then
+            d.hl.Enabled = false; continue
+        end
+
+        -- ป้องกัน Highlight หลุด parent หลัง respawn
+        if d.hl.Parent ~= char then
+            d.hl.Adornee = char
+            d.hl.Parent  = char
+        end
+
+        d.hl.Enabled = true
+
+        -- สีตาม context (เหมือนระบบเดิมทุกอย่าง)
+        if player == ActiveTarget then
+            d.hl.FillColor    = Color3.fromHSV(tick() % 5 / 5, 0.7, 1)
+            d.hl.OutlineColor = Color3.new(1, 1, 1)
+        elseif TeamList[player.Name] then
+            d.hl.FillColor    = Color3.fromRGB(0, 150, 255)
+            d.hl.OutlineColor = Color3.new(1, 1, 1)
+        else
+            d.hl.FillColor    = Color3.fromRGB(255, 50, 50)
+            d.hl.OutlineColor = Color3.fromRGB(100, 0, 0)
+        end
+    end
+end)
+
+-- ==========================================
+-- ⚙️ 5. COMBAT RENDER STEPPED (GHOST TARGET TOGGLE)
+-- ==========================================
+RS.RenderStepped:Connect(function()
+    ActiveTarget = nil
+    if TapLock and TappedTarget and TappedTarget.Character and TappedTarget.Character.Humanoid.Health > 0 then ActiveTarget = TappedTarget
+    elseif (AutoNearest or RawLock) and lp.Character and lp.Character:FindFirstChild("HumanoidRootPart") then
+        local nearest, minDist = nil, math.huge
+        for _, p in pairs(Players:GetPlayers()) do
+            if p ~= lp and p.Character and p.Character:FindFirstChild("HumanoidRootPart") and p.Character.Humanoid.Health > 0 and not TeamList[p.Name] then
+                local d = (lp.Character.HumanoidRootPart.Position - p.Character.HumanoidRootPart.Position).Magnitude
+                if d < minDist then minDist = d; nearest = p end
+            end
+        end
+        ActiveTarget = nearest
+    end
+
+    if lp.Character and lp.Character:FindFirstChild("Humanoid") and lp.Character:FindFirstChild("HumanoidRootPart") then
+        if ActiveTarget and ActiveTarget.Character and ActiveTarget.Character:FindFirstChild("HumanoidRootPart") then
+            lp.Character.Humanoid.AutoRotate = false
+            local myHRP = lp.Character.HumanoidRootPart
+            local eHRP = ActiveTarget.Character.HumanoidRootPart
+
+            if RawLock then
+                myHRP.CFrame = CFrame.new(myHRP.Position, eHRP.Position)
+                for _, part in pairs(ActiveTarget.Character:GetChildren()) do
+                    if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+                        part.CanCollide = true
+                    end
+                end
+            else
+                local dynamicPredict = (currentPing * 0.0016) + 0.1
+                local aimPos = eHRP.Position + (eHRP.Velocity * dynamicPredict)
+                local lookVector = Vector3.new(aimPos.X - myHRP.Position.X, 0, aimPos.Z - myHRP.Position.Z)
+                if lookVector.Magnitude > 0.01 then
+                    local targetCFrame = CFrame.new(myHRP.Position, myHRP.Position + lookVector)
+                    myHRP.CFrame = myHRP.CFrame:Lerp(targetCFrame, 0.7)
+                end
+                for _, part in pairs(ActiveTarget.Character:GetChildren()) do
+                    if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+                        part.CanCollide = false
+                    end
+                end
+            end
+        else
+            lp.Character.Humanoid.AutoRotate = true
+        end
+    end
+end)
+
+-- ==========================================
+-- ⚙️ 6. HEARTBEAT — AntiFling + Hitbox เท่านั้น (ย้าย ESP ออกแล้ว)
+-- ==========================================
+RS.Heartbeat:Connect(function()
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= lp and p.Character then
+            local hrp = p.Character:FindFirstChild("HumanoidRootPart")
+            local hum = p.Character:FindFirstChild("Humanoid")
+
+            if hrp then
+                if AntiFling then pcall(function() hrp.CanCollide = false; if hrp.Velocity.Magnitude > 15 then hrp.Velocity = Vector3.new(0,0,0); hrp.RotVelocity = Vector3.new(0,0,0) end end) end
+                if HitboxState and p == ActiveTarget then hrp.Size = Vector3.new(12, 12, 12); hrp.CanCollide = false; hrp.Transparency = 0.8; hrp.Color = Color3.fromRGB(255, 50, 50) else hrp.Size = Vector3.new(2, 2, 1); hrp.CanCollide = true; hrp.Transparency = 1 end
+            end
+        end
+    end
+end)
+
+UIS.InputBegan:Connect(function(input, gp)
+    if not gp and ClickTP and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+        local now = tick(); if not _G.lastClickTP then _G.lastClickTP = 0 end
+        if now - _G.lastClickTP < 0.3 then local unitRay = camera:ScreenPointToRay(input.Position.X, input.Position.Y); local rayResult = workspace:Raycast(unitRay.Origin, unitRay.Direction * 1000); if rayResult then lp.Character:MoveTo(rayResult.Position + Vector3.new(0, 3, 0)) end end; _G.lastClickTP = now
+    end
+    if not gp and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+        local tapPos = UIS:GetMouseLocation(); local targetP, minDist = nil, 100
+        for _, p in pairs(Players:GetPlayers()) do
+            if p ~= lp and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+                local sPos, onScreen = camera:WorldToViewportPoint(p.Character.HumanoidRootPart.Position); if onScreen then local d = (Vector2.new(sPos.X, sPos.Y) - tapPos).Magnitude; if d < minDist then minDist = d; targetP = p end end
+            end
+        end
+        if targetP then
+            local p = targetP; if not clickData[p.Name] then clickData[p.Name] = {count = 0, last = 0} end; if tick() - clickData[p.Name].last > 0.5 then clickData[p.Name].count = 0 end
+            clickData[p.Name].count = clickData[p.Name].count + 1; clickData[p.Name].last = tick(); if clickData[p.Name].count == 2 and TapLock then TappedTarget = p end; if clickData[p.Name].count == 3 then TeamList[p.Name] = not TeamList[p.Name]; clickData[p.Name].count = 0 end
+        end
+    end
+end)
+UIS.JumpRequest:Connect(function() if InfJump and lp.Character and lp.Character:FindFirstChild("Humanoid") then lp.Character.Humanoid:ChangeState("Jumping") end end)
