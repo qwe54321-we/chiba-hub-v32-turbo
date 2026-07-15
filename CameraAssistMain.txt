@@ -1,0 +1,314 @@
+-- LocalScript: CameraAssistMain (Production Version)
+-- วางใน StarterPlayer > StarterPlayerScripts
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+
+-- ===== ค่าคงที่ (ตกลงกันไว้แล้ว ไม่มีหน้าตั้งค่าในเวอร์ชันนี้) =====
+local MAX_DISTANCE = 500
+local OFFSET_BACK = 10
+local OFFSET_UP = 3
+local OFFSET_RIGHT = 2
+local HIGHLIGHT_COLOR = Color3.fromRGB(255, 0, 0)
+
+local DRAG_THRESHOLD = 8 -- px ก่อนนับว่าเป็นการลากปุ่ม ไม่ใช่กดสั้น
+
+local assistEnabled = false
+local currentHighlight = nil
+local lockedTargetPlayer = nil
+
+-- ===== ตรวจสอบว่าเป็นอุปกรณ์มือถือ/แท็บเล็ตเท่านั้น =====
+local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+if not isMobile then
+	-- ไม่ใช่มือถือ -> ไม่สร้าง UI เลย จบสคริปต์
+	return
+end
+
+-- cache รายชื่อผู้เล่น (ลดโหลด GetPlayers() ทุกเฟรม)
+local cachedPlayers = {}
+local function refreshCachedPlayers()
+	cachedPlayers = Players:GetPlayers()
+end
+Players.PlayerAdded:Connect(refreshCachedPlayers)
+Players.PlayerRemoving:Connect(function()
+	task.wait()
+	refreshCachedPlayers()
+end)
+refreshCachedPlayers()
+
+-- ===== UI: ไอคอนแบบแอปมือถือ (สี่เหลี่ยมมุมมน ดำเงา โปร่งใส) =====
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "CameraAssistGui"
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = player:WaitForChild("PlayerGui")
+
+local button = Instance.new("TextButton")
+button.Name = "AssistToggle"
+button.Size = UDim2.new(0, 50, 0, 50)
+button.Position = UDim2.new(0, 5, 0.5, -25)
+button.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+button.BackgroundTransparency = 0.25
+button.AutoButtonColor = false
+button.Text = ""
+button.ClipsDescendants = true
+button.ZIndex = 5
+button.Parent = screenGui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 14) -- มุมมนแบบไอคอนแอป ไม่กลมเต็มวง
+corner.Parent = button
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(255, 255, 255)
+stroke.Transparency = 0.75
+stroke.Thickness = 1
+stroke.Parent = button
+
+-- แสงเงาถาวรเบาๆ มุมบนซ้าย (ให้ดูเป็นผิวเงา)
+local glossGradient = Instance.new("UIGradient")
+glossGradient.Rotation = 45
+glossGradient.Transparency = NumberSequence.new({
+	NumberSequenceKeypoint.new(0, 0.55),
+	NumberSequenceKeypoint.new(0.15, 0.75),
+	NumberSequenceKeypoint.new(1, 1),
+})
+glossGradient.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255))
+glossGradient.Parent = button
+
+-- จุดสถานะ มุมล่างซ้าย: เขียว=เปิด, แดง=ปิด
+local statusDot = Instance.new("Frame")
+statusDot.Size = UDim2.new(0, 10, 0, 10)
+statusDot.Position = UDim2.new(0, 5, 1, -15)
+statusDot.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+statusDot.ZIndex = 6
+statusDot.Parent = button
+
+local dotCorner = Instance.new("UICorner")
+dotCorner.CornerRadius = UDim.new(1, 0)
+dotCorner.Parent = statusDot
+
+-- ตัวหนังสือ ON/OFF ที่โผล่ทับไอคอนตอนกด
+local stateLabel = Instance.new("TextLabel")
+stateLabel.Size = UDim2.new(1, 0, 1, 0)
+stateLabel.BackgroundTransparency = 1
+stateLabel.Text = ""
+stateLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+stateLabel.Font = Enum.Font.GothamBold
+stateLabel.TextScaled = true
+stateLabel.TextTransparency = 1
+stateLabel.ZIndex = 7
+stateLabel.Parent = button
+
+-- แถบแสงเงาที่วิ่งทแยงตอนกด (สร้างจาก Frame + UIGradient ไม่ใช่รูปภายนอก)
+local shineBar = Instance.new("Frame")
+shineBar.Size = UDim2.new(0, 16, 0, 100)
+shineBar.AnchorPoint = Vector2.new(0.5, 0.5)
+shineBar.Rotation = 45
+shineBar.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+shineBar.BorderSizePixel = 0
+shineBar.ZIndex = 6
+shineBar.Parent = button
+
+local shineGradient = Instance.new("UIGradient")
+shineGradient.Transparency = NumberSequence.new({
+	NumberSequenceKeypoint.new(0, 1),
+	NumberSequenceKeypoint.new(0.5, 0.35),
+	NumberSequenceKeypoint.new(1, 1),
+})
+shineGradient.Rotation = 90
+shineGradient.Parent = shineBar
+
+-- ตำแหน่งเริ่ม/จบของแถบแสง (นอกกรอบปุ่มทั้งสองฝั่ง แนวทแยง)
+local POS_TOP_RIGHT = UDim2.new(1, 25, 0, -25)
+local POS_BOTTOM_LEFT = UDim2.new(0, -25, 1, 25)
+shineBar.Position = POS_TOP_RIGHT
+shineBar.Visible = false
+
+local playingAnimation = false
+
+local function playToggleAnimation(turningOn)
+	if playingAnimation then return end
+	playingAnimation = true
+
+	local startPos = turningOn and POS_TOP_RIGHT or POS_BOTTOM_LEFT
+	local endPos = turningOn and POS_BOTTOM_LEFT or POS_TOP_RIGHT
+
+	shineBar.Position = startPos
+	shineBar.Visible = true
+	stateLabel.Text = turningOn and "ON" or "OFF"
+	stateLabel.TextTransparency = 1
+
+	local shineTween = TweenService:Create(
+		shineBar,
+		TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut),
+		{Position = endPos}
+	)
+	shineTween:Play()
+
+	task.spawn(function()
+		task.wait(0.35 * 0.4) -- รอแสงวิ่งมาใกล้กลางจอ
+		local fadeIn = TweenService:Create(stateLabel, TweenInfo.new(0.12), {TextTransparency = 0})
+		fadeIn:Play()
+		fadeIn.Completed:Wait()
+
+		task.wait(0.25) -- ค้างคำ ON/OFF ไว้ให้เห็นชัด
+
+		local fadeOut = TweenService:Create(stateLabel, TweenInfo.new(0.25), {TextTransparency = 1})
+		fadeOut:Play()
+		fadeOut.Completed:Wait()
+
+		shineBar.Visible = false
+		stateLabel.Text = ""
+		statusDot.BackgroundColor3 = turningOn
+			and Color3.fromRGB(60, 200, 90)
+			or Color3.fromRGB(200, 50, 50)
+		playingAnimation = false
+	end)
+end
+
+local function clearHighlight()
+	if currentHighlight then
+		currentHighlight:Destroy()
+		currentHighlight = nil
+	end
+	lockedTargetPlayer = nil
+end
+
+local function setAssist(state)
+	assistEnabled = state
+	playToggleAnimation(state)
+	if not assistEnabled then
+		camera.CameraType = Enum.CameraType.Custom
+		clearHighlight()
+	end
+end
+
+-- ===== กดสั้น (toggle) / ลาก (ย้ายปุ่ม) =====
+local isPressing = false
+local isDraggingButton = false
+local dragStartPos = nil
+local lastDragPos = nil
+
+button.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		isPressing = true
+		isDraggingButton = false
+		dragStartPos = input.Position
+		lastDragPos = input.Position
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if not isPressing then return end
+	if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+		local delta = (input.Position - dragStartPos).Magnitude
+		if delta > DRAG_THRESHOLD then
+			isDraggingButton = true
+		end
+		if isDraggingButton then
+			local moveDelta = input.Position - lastDragPos
+			local screenSize = camera.ViewportSize
+			local newX = math.clamp(button.AbsolutePosition.X + moveDelta.X, 0, screenSize.X - button.AbsoluteSize.X)
+			local newY = math.clamp(button.AbsolutePosition.Y + moveDelta.Y, 0, screenSize.Y - button.AbsoluteSize.Y)
+			button.Position = UDim2.new(0, newX, 0, newY)
+			lastDragPos = input.Position
+		end
+	end
+end)
+
+button.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		isPressing = false
+		if not isDraggingButton then
+			setAssist(not assistEnabled)
+		end
+		isDraggingButton = false
+	end
+end)
+
+-- ===== หาผู้เล่นที่ใกล้ที่สุด (ไม่มีระบบทีม ทุกคนคือศัตรู) =====
+local function getNearestPlayer()
+	local character = player.Character
+	if not character then return nil end
+	local rootPart = character:FindFirstChild("HumanoidRootPart")
+	if not rootPart then return nil end
+
+	local nearestPlayer, nearestDistance = nil, MAX_DISTANCE
+
+	for _, otherPlayer in ipairs(cachedPlayers) do
+		if otherPlayer ~= player and otherPlayer.Character then
+			local otherRoot = otherPlayer.Character:FindFirstChild("HumanoidRootPart")
+			local otherHumanoid = otherPlayer.Character:FindFirstChild("Humanoid")
+			if otherRoot and otherHumanoid and otherHumanoid.Health > 0 then
+				local distance = (otherRoot.Position - rootPart.Position).Magnitude
+				if distance < nearestDistance then
+					nearestDistance = distance
+					nearestPlayer = otherPlayer
+				end
+			end
+		end
+	end
+
+	return nearestPlayer
+end
+
+local function applyHighlight(targetPlayer)
+	if lockedTargetPlayer == targetPlayer then return end
+	clearHighlight()
+	if targetPlayer and targetPlayer.Character then
+		local highlight = Instance.new("Highlight")
+		highlight.FillColor = HIGHLIGHT_COLOR
+		highlight.FillTransparency = 0.5
+		highlight.OutlineColor = HIGHLIGHT_COLOR
+		highlight.OutlineTransparency = 0
+		highlight.Parent = targetPlayer.Character
+		currentHighlight = highlight
+		lockedTargetPlayer = targetPlayer
+	end
+end
+
+-- ===== อัปเดตกล้องทุกเฟรม =====
+RunService.RenderStepped:Connect(function()
+	if not assistEnabled then return end
+
+	local character = player.Character
+	if not character then return end
+	local rootPart = character:FindFirstChild("HumanoidRootPart")
+	if not rootPart then return end
+
+	local target = getNearestPlayer()
+
+	if target and target.Character then
+		local targetRoot = target.Character:FindFirstChild("HumanoidRootPart")
+		if targetRoot then
+			camera.CameraType = Enum.CameraType.Scriptable
+			applyHighlight(target)
+
+			local lookDirection = (targetRoot.Position - rootPart.Position).Unit
+			local rightVector = lookDirection:Cross(Vector3.new(0, 1, 0)).Unit
+
+			local camPosition = rootPart.Position
+				- (lookDirection * OFFSET_BACK)
+				+ (rightVector * OFFSET_RIGHT)
+				+ Vector3.new(0, OFFSET_UP, 0)
+
+			camera.CFrame = CFrame.new(camPosition, targetRoot.Position + Vector3.new(0, OFFSET_UP * 0.5, 0))
+			return
+		end
+	end
+
+	-- ไม่เจอเป้าหมาย -> คืนกล้องให้ Roblox default ควบคุมเอง
+	clearHighlight()
+	if camera.CameraType == Enum.CameraType.Scriptable then
+		camera.CameraType = Enum.CameraType.Custom
+	end
+end)
+
+player.CharacterAdded:Connect(function()
+	camera.CameraType = Enum.CameraType.Custom
+	clearHighlight()
+end)
