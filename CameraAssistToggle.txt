@@ -1,0 +1,469 @@
+-- LocalScript: CameraAssistToggle
+-- วางใน StarterPlayer > StarterPlayerScripts
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+
+-- ===== ค่าเริ่มต้น =====
+local settings = {
+	MaxDistance = 500,
+	OffsetBack = 10,
+	OffsetUp = 3,
+	OffsetRight = 2,
+	TurnSpeed = 20,
+	HighlightColor = Color3.fromRGB(255, 0, 0),
+}
+
+local LONG_PRESS_TIME = 0.4
+local DRAG_THRESHOLD = 8 -- px ก่อนนับว่าเป็นการลากปุ่ม ไม่ใช่กดสั้น/ค้าง
+
+local assistEnabled = false
+local settingsOpen = false
+local currentHighlight = nil
+local lockedTargetPlayer = nil
+
+-- cache รายชื่อผู้เล่น (ลดโหลด GetPlayers() ทุกเฟรม)
+local cachedPlayers = {}
+local function refreshCachedPlayers()
+	cachedPlayers = Players:GetPlayers()
+end
+Players.PlayerAdded:Connect(refreshCachedPlayers)
+Players.PlayerRemoving:Connect(function()
+	task.wait()
+	refreshCachedPlayers()
+end)
+refreshCachedPlayers()
+
+-- ===== UI หลัก (ปุ่มลากย้ายได้) =====
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "CameraAssistGui"
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling -- กันบั๊ก ZIndex ทับกันเอง
+screenGui.Parent = player:WaitForChild("PlayerGui")
+
+local button = Instance.new("TextButton")
+button.Name = "AssistToggle"
+button.Size = UDim2.new(0, 50, 0, 50)
+button.Position = UDim2.new(0, 5, 0.5, -25)
+button.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+button.BackgroundTransparency = 0.3
+button.Text = "OFF"
+button.TextColor3 = Color3.fromRGB(255, 255, 255)
+button.TextScaled = true
+button.Font = Enum.Font.GothamBold
+button.ZIndex = 5
+button.Parent = screenGui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(1, 0)
+corner.Parent = button
+
+local function refreshButtonVisual()
+	if assistEnabled then
+		button.Text = "ON"
+		button.BackgroundColor3 = Color3.fromRGB(30, 150, 60)
+	else
+		button.Text = "OFF"
+		button.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+	end
+end
+
+local function clearHighlight()
+	if currentHighlight then
+		currentHighlight:Destroy()
+		currentHighlight = nil
+	end
+	lockedTargetPlayer = nil
+end
+
+local function setAssist(state)
+	assistEnabled = state
+	refreshButtonVisual()
+	if not assistEnabled then
+		camera.CameraType = Enum.CameraType.Custom
+		clearHighlight()
+	end
+end
+
+-- ===== หน้าปรับแต่ง (Settings Panel) =====
+local settingsFrame = Instance.new("Frame")
+settingsFrame.Name = "SettingsPanel"
+settingsFrame.Size = UDim2.new(0, 240, 0, 300)
+settingsFrame.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+settingsFrame.BackgroundTransparency = 0.05
+settingsFrame.Visible = false
+settingsFrame.ZIndex = 1 -- แก้จาก 5 เป็น 1 กันทับลูกของตัวเอง
+settingsFrame.Parent = screenGui
+
+local sfCorner = Instance.new("UICorner")
+sfCorner.CornerRadius = UDim.new(0, 10)
+sfCorner.Parent = settingsFrame
+
+local sfStroke = Instance.new("UIStroke")
+sfStroke.Color = Color3.fromRGB(255, 255, 255)
+sfStroke.Transparency = 0.5
+sfStroke.Thickness = 1.5
+sfStroke.Parent = settingsFrame
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -30, 0, 24)
+title.Position = UDim2.new(0, 5, 0, 0)
+title.BackgroundTransparency = 1
+title.Text = "Camera Assist Settings"
+title.TextColor3 = Color3.fromRGB(255, 255, 255)
+title.Font = Enum.Font.GothamBold
+title.TextScaled = true
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = settingsFrame
+
+-- ปุ่มปิด (X) มุมขวาบน
+local closeButton = Instance.new("TextButton")
+closeButton.Size = UDim2.new(0, 24, 0, 24)
+closeButton.Position = UDim2.new(1, -26, 0, 0)
+closeButton.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
+closeButton.Text = "X"
+closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeButton.Font = Enum.Font.GothamBold
+closeButton.TextScaled = true
+closeButton.Parent = settingsFrame
+
+local closeCorner = Instance.new("UICorner")
+closeCorner.CornerRadius = UDim.new(0.3, 0)
+closeCorner.Parent = closeButton
+
+local function closeSettingsPanel()
+	settingsOpen = false
+	settingsFrame.Visible = false
+	if not assistEnabled then
+		camera.CameraType = Enum.CameraType.Custom
+	end
+end
+
+local function openSettingsPanel()
+	settingsOpen = true
+	local btnPos = button.AbsolutePosition
+	local screenSize = camera.ViewportSize
+	local px = math.clamp(btnPos.X + 60, 0, screenSize.X - 240)
+	local py = math.clamp(btnPos.Y - 125, 0, screenSize.Y - 300)
+	settingsFrame.Position = UDim2.new(0, px, 0, py)
+	settingsFrame.Visible = true
+end
+
+closeButton.MouseButton1Click:Connect(closeSettingsPanel)
+
+-- ฟังก์ชันสร้าง slider แบบลากได้ (track เข้ม + fill bar + knob ขาวขอบเขียว)
+local function createSlider(order, labelText, min, max, default, onChange)
+	local yPos = 30 + (order - 1) * 36
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1, -10, 0, 16)
+	label.Position = UDim2.new(0, 5, 0, yPos)
+	label.BackgroundTransparency = 1
+	label.TextColor3 = Color3.fromRGB(220, 220, 220)
+	label.Font = Enum.Font.Gotham
+	label.TextScaled = true
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.Text = labelText .. ": " .. tostring(default)
+	label.Parent = settingsFrame
+
+	local track = Instance.new("Frame")
+	track.Size = UDim2.new(1, -20, 0, 8)
+	track.Position = UDim2.new(0, 10, 0, yPos + 18)
+	track.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+	track.BorderSizePixel = 0
+	track.Parent = settingsFrame
+
+	local trackCorner = Instance.new("UICorner")
+	trackCorner.CornerRadius = UDim.new(1, 0)
+	trackCorner.Parent = track
+
+	local trackStroke = Instance.new("UIStroke")
+	trackStroke.Color = Color3.fromRGB(255, 255, 255)
+	trackStroke.Transparency = 0.6
+	trackStroke.Thickness = 1
+	trackStroke.Parent = track
+
+	local fill = Instance.new("Frame")
+	fill.Size = UDim2.new((default - min) / (max - min), 0, 1, 0)
+	fill.BackgroundColor3 = Color3.fromRGB(60, 200, 100)
+	fill.BorderSizePixel = 0
+	fill.Parent = track
+
+	local fillCorner = Instance.new("UICorner")
+	fillCorner.CornerRadius = UDim.new(1, 0)
+	fillCorner.Parent = fill
+
+	local knob = Instance.new("Frame")
+	knob.Size = UDim2.new(0, 18, 0, 18)
+	knob.AnchorPoint = Vector2.new(0.5, 0.5)
+	knob.Position = UDim2.new((default - min) / (max - min), 0, 0.5, 0)
+	knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	knob.ZIndex = 2
+	knob.Parent = track
+
+	local knobCorner = Instance.new("UICorner")
+	knobCorner.CornerRadius = UDim.new(1, 0)
+	knobCorner.Parent = knob
+
+	local knobStroke = Instance.new("UIStroke")
+	knobStroke.Color = Color3.fromRGB(30, 150, 60)
+	knobStroke.Thickness = 2
+	knobStroke.Parent = knob
+
+	local dragging = false
+
+	local function updateFromInput(inputPos)
+		if track.AbsoluteSize.X <= 0 then return end
+		local relativeX = (inputPos.X - track.AbsolutePosition.X) / track.AbsoluteSize.X
+		relativeX = math.clamp(relativeX, 0, 1)
+		knob.Position = UDim2.new(relativeX, 0, 0.5, 0)
+		fill.Size = UDim2.new(relativeX, 0, 1, 0)
+		local value = min + (max - min) * relativeX
+		if min == math.floor(min) and max == math.floor(max) then
+			value = math.floor(value + 0.5)
+		else
+			value = math.floor(value * 10 + 0.5) / 10
+		end
+		label.Text = labelText .. ": " .. tostring(value)
+		onChange(value)
+	end
+
+	knob.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			updateFromInput(input.Position)
+		end
+	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+
+	track.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			updateFromInput(input.Position)
+			dragging = true
+		end
+	end)
+end
+
+createSlider(1, "ระยะล็อก (studs)", 50, 1000, settings.MaxDistance, function(v) settings.MaxDistance = v end)
+createSlider(2, "ระยะกล้องหลัง", 3, 20, settings.OffsetBack, function(v) settings.OffsetBack = v end)
+createSlider(3, "ความสูงกล้อง", 0, 10, settings.OffsetUp, function(v) settings.OffsetUp = v end)
+createSlider(4, "เยื้องข้าง", -5, 5, settings.OffsetRight, function(v) settings.OffsetRight = v end)
+createSlider(5, "ความเร็วหัน (สุด=Snap)", 1, 20, settings.TurnSpeed, function(v) settings.TurnSpeed = v end)
+
+-- ===== เลือกสี Highlight =====
+local colorLabel = Instance.new("TextLabel")
+colorLabel.Size = UDim2.new(1, -10, 0, 16)
+colorLabel.Position = UDim2.new(0, 5, 0, 30 + 5 * 36)
+colorLabel.BackgroundTransparency = 1
+colorLabel.TextColor3 = Color3.fromRGB(220, 220, 220)
+colorLabel.Font = Enum.Font.Gotham
+colorLabel.TextScaled = true
+colorLabel.TextXAlignment = Enum.TextXAlignment.Left
+colorLabel.Text = "สี Highlight เป้าหมาย"
+colorLabel.Parent = settingsFrame
+
+local colorOptions = {
+	{name = "แดง", color = Color3.fromRGB(255, 0, 0)},
+	{name = "น้ำเงิน", color = Color3.fromRGB(0, 120, 255)},
+	{name = "เหลือง", color = Color3.fromRGB(255, 220, 0)},
+	{name = "เขียว", color = Color3.fromRGB(0, 220, 90)},
+	{name = "ม่วง", color = Color3.fromRGB(180, 0, 220)},
+}
+
+for i, opt in ipairs(colorOptions) do
+	local swatch = Instance.new("TextButton")
+	swatch.Size = UDim2.new(0, 32, 0, 32)
+	swatch.Position = UDim2.new(0, 5 + (i - 1) * 40, 0, 30 + 5 * 36 + 20)
+	swatch.BackgroundColor3 = opt.color
+	swatch.Text = ""
+	swatch.Parent = settingsFrame
+
+	local swatchCorner = Instance.new("UICorner")
+	swatchCorner.CornerRadius = UDim.new(0.3, 0)
+	swatchCorner.Parent = swatch
+
+	swatch.MouseButton1Click:Connect(function()
+		settings.HighlightColor = opt.color
+		if currentHighlight then
+			currentHighlight.FillColor = opt.color
+			currentHighlight.OutlineColor = opt.color
+		end
+	end)
+end
+
+-- ===== กดสั้น (toggle) / กดค้าง (settings) / ลาก (ย้ายปุ่ม) =====
+local isPressing = false
+local longPressFired = false
+local isDraggingButton = false
+local dragStartPos = nil
+local lastDragPos = nil
+
+button.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		isPressing = true
+		longPressFired = false
+		isDraggingButton = false
+		dragStartPos = input.Position
+		lastDragPos = input.Position
+
+		task.delay(LONG_PRESS_TIME, function()
+			if isPressing and not isDraggingButton then
+				longPressFired = true
+				if settingsOpen then
+					closeSettingsPanel()
+				else
+					openSettingsPanel()
+				end
+			end
+		end)
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if not isPressing then return end
+	if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+		local delta = (input.Position - dragStartPos).Magnitude
+		if delta > DRAG_THRESHOLD then
+			isDraggingButton = true
+		end
+		if isDraggingButton then
+			local moveDelta = input.Position - lastDragPos
+			local screenSize = camera.ViewportSize
+			local newX = math.clamp(button.AbsolutePosition.X + moveDelta.X, 0, screenSize.X - button.AbsoluteSize.X)
+			local newY = math.clamp(button.AbsolutePosition.Y + moveDelta.Y, 0, screenSize.Y - button.AbsoluteSize.Y)
+			button.Position = UDim2.new(0, newX, 0, newY)
+			lastDragPos = input.Position
+		end
+	end
+end)
+
+button.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		isPressing = false
+		if not isDraggingButton and not longPressFired then
+			setAssist(not assistEnabled)
+		end
+		isDraggingButton = false
+	end
+end)
+
+-- ===== หาผู้เล่นที่ใกล้ที่สุด =====
+local function getNearestPlayer()
+	local character = player.Character
+	if not character then return nil end
+	local rootPart = character:FindFirstChild("HumanoidRootPart")
+	if not rootPart then return nil end
+
+	local nearestPlayer, nearestDistance = nil, settings.MaxDistance
+
+	for _, otherPlayer in ipairs(cachedPlayers) do
+		if otherPlayer ~= player and otherPlayer.Character then
+			local otherRoot = otherPlayer.Character:FindFirstChild("HumanoidRootPart")
+			local otherHumanoid = otherPlayer.Character:FindFirstChild("Humanoid")
+			if otherRoot and otherHumanoid and otherHumanoid.Health > 0 then
+				local distance = (otherRoot.Position - rootPart.Position).Magnitude
+				if distance < nearestDistance then
+					nearestDistance = distance
+					nearestPlayer = otherPlayer
+				end
+			end
+		end
+	end
+
+	return nearestPlayer
+end
+
+local function applyHighlight(targetPlayer)
+	if lockedTargetPlayer == targetPlayer then return end
+	clearHighlight()
+	if targetPlayer and targetPlayer.Character then
+		local highlight = Instance.new("Highlight")
+		highlight.FillColor = settings.HighlightColor
+		highlight.FillTransparency = 0.5
+		highlight.OutlineColor = settings.HighlightColor
+		highlight.OutlineTransparency = 0
+		highlight.Parent = targetPlayer.Character
+		currentHighlight = highlight
+		lockedTargetPlayer = targetPlayer
+	end
+end
+
+-- ===== อัปเดตกล้องทุกเฟรม =====
+RunService.RenderStepped:Connect(function(dt)
+	-- โหมด Preview: ตอนเปิด Settings ให้เห็นมุมกล้องเปลี่ยนตาม slider ทันที
+	if settingsOpen then
+		local character = player.Character
+		if character then
+			local rootPart = character:FindFirstChild("HumanoidRootPart")
+			if rootPart then
+				camera.CameraType = Enum.CameraType.Scriptable
+				local lookDirection = rootPart.CFrame.LookVector
+				local rightVector = lookDirection:Cross(Vector3.new(0, 1, 0)).Unit
+				local camPosition = rootPart.Position
+					- (lookDirection * settings.OffsetBack)
+					+ (rightVector * settings.OffsetRight)
+					+ Vector3.new(0, settings.OffsetUp, 0)
+				local aimPoint = rootPart.Position + lookDirection * 10 + Vector3.new(0, settings.OffsetUp * 0.5, 0)
+				camera.CFrame = CFrame.new(camPosition, aimPoint)
+			end
+		end
+		return
+	end
+
+	if not assistEnabled then return end
+
+	local character = player.Character
+	if not character then return end
+	local rootPart = character:FindFirstChild("HumanoidRootPart")
+	if not rootPart then return end
+
+	local target = getNearestPlayer()
+
+	if target and target.Character then
+		local targetRoot = target.Character:FindFirstChild("HumanoidRootPart")
+		if targetRoot then
+			camera.CameraType = Enum.CameraType.Scriptable
+			applyHighlight(target)
+
+			local lookDirection = (targetRoot.Position - rootPart.Position).Unit
+			local rightVector = lookDirection:Cross(Vector3.new(0, 1, 0)).Unit
+
+			local camPosition = rootPart.Position
+				- (lookDirection * settings.OffsetBack)
+				+ (rightVector * settings.OffsetRight)
+				+ Vector3.new(0, settings.OffsetUp, 0)
+
+			local targetCFrame = CFrame.new(camPosition, targetRoot.Position + Vector3.new(0, settings.OffsetUp * 0.5, 0))
+
+			if settings.TurnSpeed >= 20 then
+				camera.CFrame = targetCFrame
+			else
+				local alpha = math.clamp(settings.TurnSpeed * dt, 0, 1)
+				camera.CFrame = camera.CFrame:Lerp(targetCFrame, alpha)
+			end
+			return
+		end
+	end
+
+	clearHighlight()
+	if camera.CameraType == Enum.CameraType.Scriptable then
+		camera.CameraType = Enum.CameraType.Custom
+	end
+end)
+
+player.CharacterAdded:Connect(function()
+	camera.CameraType = Enum.CameraType.Custom
+	clearHighlight()
+end)
