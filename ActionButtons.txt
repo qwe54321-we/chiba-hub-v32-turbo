@@ -1,0 +1,235 @@
+local Players = game:GetService("Players")
+local Debris = game:GetService("Debris")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+
+-- ===== ตัวแปรนับจำนวน =====
+local count = 0
+local maxCount = 20
+
+-- ===== สร้าง GUI หลัก =====
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "ActionButtonsGui"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = player:WaitForChild("PlayerGui")
+
+local outerFrame = Instance.new("Frame")
+outerFrame.Name = "OuterFrame"
+outerFrame.Size = UDim2.new(0, 165, 0, 80)
+outerFrame.Position = UDim2.new(0, 20, 0, 200)
+outerFrame.BackgroundTransparency = 1
+outerFrame.Parent = screenGui
+
+local outerLayout = Instance.new("UIListLayout")
+outerLayout.FillDirection = Enum.FillDirection.Horizontal
+outerLayout.Parent = outerFrame
+
+-- แถบดำสำหรับลาก (อยู่ซ้ายสุด)
+local dragHandle = Instance.new("Frame")
+dragHandle.Name = "DragHandle"
+dragHandle.Size = UDim2.new(0, 14, 1, 0)
+dragHandle.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+dragHandle.BackgroundTransparency = 0.1
+dragHandle.BorderSizePixel = 0
+dragHandle.Parent = outerFrame
+
+local dragCorner = Instance.new("UICorner")
+dragCorner.CornerRadius = UDim.new(0, 6)
+dragCorner.Parent = dragHandle
+
+-- เนื้อหาหลัก (กรอบเทา ครอบปุ่มทั้งหมด)
+local contentFrame = Instance.new("Frame")
+contentFrame.Name = "Content"
+contentFrame.Size = UDim2.new(0, 148, 1, 0)
+contentFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+contentFrame.BackgroundTransparency = 0.3
+contentFrame.BorderSizePixel = 0
+contentFrame.Parent = outerFrame
+
+local contentCorner = Instance.new("UICorner")
+contentCorner.CornerRadius = UDim.new(0, 8)
+contentCorner.Parent = contentFrame
+
+local contentLayout = Instance.new("UIListLayout")
+contentLayout.FillDirection = Enum.FillDirection.Vertical
+contentLayout.Padding = UDim.new(0, 4)
+contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+contentLayout.Parent = contentFrame
+
+local contentPadding = Instance.new("UIPadding")
+contentPadding.PaddingTop = UDim.new(0, 4)
+contentPadding.PaddingBottom = UDim.new(0, 4)
+contentPadding.Parent = contentFrame
+
+-- แถวที่ 1: ปุ่ม action
+local row1 = Instance.new("Frame")
+row1.Name = "Row1"
+row1.Size = UDim2.new(1, 0, 0, 34)
+row1.BackgroundTransparency = 1
+row1.Parent = contentFrame
+
+local row1Layout = Instance.new("UIListLayout")
+row1Layout.FillDirection = Enum.FillDirection.Horizontal
+row1Layout.Padding = UDim.new(0, 5)
+row1Layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+row1Layout.VerticalAlignment = Enum.VerticalAlignment.Center
+row1Layout.Parent = row1
+
+local function createButton(parent, name, text, size, color)
+	local button = Instance.new("TextButton")
+	button.Name = name
+	button.Size = size
+	button.BackgroundColor3 = color
+	button.Text = text
+	button.TextColor3 = Color3.new(1, 1, 1)
+	button.TextScaled = true
+	button.Font = Enum.Font.GothamBold
+	button.AutoButtonColor = true
+	button.Parent = parent
+
+	local btnCorner = Instance.new("UICorner")
+	btnCorner.CornerRadius = UDim.new(0, 6)
+	btnCorner.Parent = button
+
+	return button
+end
+
+local bombButton = createButton(row1, "BombButton", "💣", UDim2.new(0, 44, 0, 34), Color3.fromRGB(200, 60, 60))
+local wallButton = createButton(row1, "WallButton", "🧱", UDim2.new(0, 44, 0, 34), Color3.fromRGB(120, 120, 120))
+local bowButton = createButton(row1, "BowButton", "🏹", UDim2.new(0, 44, 0, 34), Color3.fromRGB(60, 140, 200))
+
+-- แถวที่ 2: ตัวนับ - X/20 +
+local row2 = Instance.new("Frame")
+row2.Name = "Row2"
+row2.Size = UDim2.new(1, 0, 0, 28)
+row2.BackgroundTransparency = 1
+row2.Parent = contentFrame
+
+local row2Layout = Instance.new("UIListLayout")
+row2Layout.FillDirection = Enum.FillDirection.Horizontal
+row2Layout.Padding = UDim.new(0, 5)
+row2Layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+row2Layout.VerticalAlignment = Enum.VerticalAlignment.Center
+row2Layout.Parent = row2
+
+local minusButton = createButton(row2, "MinusButton", "-", UDim2.new(0, 26, 0, 26), Color3.fromRGB(90, 90, 90))
+
+local countLabel = Instance.new("TextLabel")
+countLabel.Name = "CountLabel"
+countLabel.Size = UDim2.new(0, 60, 0, 26)
+countLabel.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+countLabel.BackgroundTransparency = 0.2
+countLabel.Text = count .. "/" .. maxCount
+countLabel.TextColor3 = Color3.new(1, 1, 1)
+countLabel.TextScaled = true
+countLabel.Font = Enum.Font.GothamBold
+countLabel.Parent = row2
+
+local labelCorner = Instance.new("UICorner")
+labelCorner.CornerRadius = UDim.new(0, 6)
+labelCorner.Parent = countLabel
+
+local plusButton = createButton(row2, "PlusButton", "+", UDim2.new(0, 26, 0, 26), Color3.fromRGB(90, 90, 90))
+
+local function updateCountLabel()
+	countLabel.Text = count .. "/" .. maxCount
+end
+
+minusButton.MouseButton1Click:Connect(function()
+	count = count - 1
+	updateCountLabel()
+end)
+
+plusButton.MouseButton1Click:Connect(function()
+	count = count + 1
+	updateCountLabel()
+end)
+
+-- ===== ทำให้ลากได้ (ลากที่แถบดำ หรือพื้นหลัง content ก็ได้ ลากทั้งกลุ่มไปด้วยกัน) =====
+local dragging = false
+local dragStart
+local startPos
+
+local function beginDrag(input)
+	dragging = true
+	dragStart = input.Position
+	startPos = outerFrame.Position
+
+	input.Changed:Connect(function()
+		if input.UserInputState == Enum.UserInputState.End then
+			dragging = false
+		end
+	end)
+end
+
+local function updateDrag(input)
+	local delta = input.Position - dragStart
+	outerFrame.Position = UDim2.new(
+		startPos.X.Scale, startPos.X.Offset + delta.X,
+		startPos.Y.Scale, startPos.Y.Offset + delta.Y
+	)
+end
+
+dragHandle.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		beginDrag(input)
+	end
+end)
+
+contentFrame.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		beginDrag(input)
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		updateDrag(input)
+	end
+end)
+
+-- ===== Logic ปุ่ม action (ฝั่ง client ล้วน) =====
+local function getCharacterParts()
+	local character = player.Character
+	if not character then return nil, nil, nil end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local root = character:FindFirstChild("HumanoidRootPart")
+	return character, humanoid, root
+end
+
+bombButton.MouseButton1Click:Connect(function()
+	local _, humanoid = getCharacterParts()
+	if humanoid then
+		humanoid.Health = 0
+	end
+end)
+
+wallButton.MouseButton1Click:Connect(function()
+	local _, _, root = getCharacterParts()
+	if not root then return end
+
+	local wall = Instance.new("Part")
+	wall.Size = Vector3.new(6, 8, 1)
+	wall.Anchored = true
+	wall.CanCollide = true
+	wall.Material = Enum.Material.Rock
+	wall.BrickColor = BrickColor.new("Dark stone grey")
+	wall.CFrame = root.CFrame * CFrame.new(0, 0, -6)
+	wall.Parent = workspace
+
+	Debris:AddItem(wall, 10)
+end)
+
+bowButton.MouseButton1Click:Connect(function()
+	local _, _, root = getCharacterParts()
+	if not root then return end
+
+	local pushDirection = root.CFrame.LookVector * -1
+	local bodyVelocity = Instance.new("BodyVelocity")
+	bodyVelocity.MaxForce = Vector3.new(4000, 4000, 4000)
+	bodyVelocity.Velocity = pushDirection * 50 + Vector3.new(0, 15, 0)
+	bodyVelocity.Parent = root
+
+	Debris:AddItem(bodyVelocity, 0.3)
+end)
