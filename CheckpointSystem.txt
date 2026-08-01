@@ -1,0 +1,598 @@
+--[[
+====================================================================
+ระบบเชฟจุดวาป (Checkpoint / Warp Point System) - ฉบับ Executor Save
+====================================================================
+- รองรับฟังก์ชัน writefile, readfile, isfile ของ Executor (PC/Mobile)
+- ข้อมูลจะถูกบันทึกเป็นไฟล์ JSON ในโฟลเดอร์ workspace ของตัวรัน
+- แม้ออกเกมเข้าใหม่ จุดที่บันทึกไว้ก็จะยังอยู่ (เฉพาะกรณีตัวรันรองรับฟังก์ชันไฟล์ครบ)
+====================================================================
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
+
+local player = Players.LocalPlayer
+
+local MAX_POINTS = 20 -- เพดานจำนวนจุดที่บันทึกได้ต่อผู้เล่น
+
+-- เช็คให้ครบทั้ง 3 ฟังก์ชันในที่เดียว แล้วใช้ตัวแปรนี้ทุกจุด (แก้ปัญหาเดิมที่ save เช็คแค่ writefile
+-- แต่ load เช็ค isfile+readfile ด้วย ทำให้บางตัวรันเซฟได้แต่โหลดไม่ได้)
+local hasFileIO = type(writefile) == "function" and type(readfile) == "function" and type(isfile) == "function"
+
+-- ==========================================================
+-- ตรวจว่ามีเซิร์ฟเวอร์ให้ใช้หรือยัง (ถ้ามีใช้เซิร์ฟเวอร์ ถ้าไม่มีใช้โหมด Executor)
+-- ==========================================================
+local actionEvent = ReplicatedStorage:FindFirstChild("CheckpointAction")
+if not actionEvent then
+	actionEvent = ReplicatedStorage:WaitForChild("CheckpointAction", 2)
+end
+local syncEvent = ReplicatedStorage:FindFirstChild("CheckpointSync")
+if not syncEvent then
+	syncEvent = ReplicatedStorage:WaitForChild("CheckpointSync", 2)
+end
+
+local usingServer = (actionEvent ~= nil and syncEvent ~= nil)
+
+-- ==========================================================
+-- โหมดเก็บในเครื่องผ่านตัวรัน (Executor Workspace Mode)
+-- ==========================================================
+local points = {}
+local nextId = 1
+local SAVE_FILENAME = "CheckpointData_" .. player.UserId .. ".json" -- แยกไฟล์ตาม UID ป้องกันการตีกันถ้าสลับไอดี
+local ATTR_NAME = "CheckpointData" -- ไว้สำรองเผื่อตัวรันไม่รองรับ (ชั่วคราวเท่านั้น หายเมื่อออกเกม)
+
+local function loadLocalData()
+	local raw = ""
+
+	if hasFileIO then
+		if isfile(SAVE_FILENAME) then
+			local success, result = pcall(function()
+				return readfile(SAVE_FILENAME)
+			end)
+			if success then
+				raw = result
+			end
+		end
+	else
+		-- ถ้าไม่ใช่ตัวรัน (หรือรองรับไม่ครบ) ให้กลับไปใช้ Attribute แบบเดิมแก้ขัด
+		-- หมายเหตุ: โหมดนี้ไม่ persist ข้ามการออก-เข้าเกม
+		raw = player:GetAttribute(ATTR_NAME)
+	end
+
+	-- นำข้อความ JSON มาแปลงกลับเป็นตาราง
+	if raw and raw ~= "" then
+		local success, decoded = pcall(function()
+			return HttpService:JSONDecode(raw)
+		end)
+		if success and decoded then
+			points = decoded.points or {}
+			nextId = decoded.nextId or 1
+		end
+	end
+end
+
+local function saveLocalData()
+	local encoded = HttpService:JSONEncode({points = points, nextId = nextId})
+
+	if hasFileIO then
+		pcall(function()
+			writefile(SAVE_FILENAME, encoded)
+		end)
+	else
+		player:SetAttribute(ATTR_NAME, encoded)
+	end
+end
+
+local function getHRP()
+	local character = player.Character
+	return character and character:FindFirstChild("HumanoidRootPart")
+end
+
+local function cframeToTable(cf)
+	local rx, ry, rz = cf:ToOrientation()
+	return {x = cf.Position.X, y = cf.Position.Y, z = cf.Position.Z, rx = rx, ry = ry, rz = rz}
+end
+
+local function tableToCFrame(t)
+	return CFrame.new(t.x, t.y, t.z) * CFrame.Angles(t.rx or 0, t.ry or 0, t.rz or 0)
+end
+
+local onSyncCallback
+
+local function notify(pointsList, message)
+	if onSyncCallback then
+		onSyncCallback(pointsList, message)
+	end
+end
+
+local function doCreate(name)
+	if usingServer then
+		actionEvent:FireServer("create", {name = name})
+		return
+	end
+	if #points >= MAX_POINTS then
+		notify(points, "บันทึกเต็มแล้ว! (สูงสุด " .. MAX_POINTS .. " จุด)")
+		return
+	end
+	local hrp = getHRP()
+	if not hrp then
+		notify(points, "ตัวละครยังไม่พร้อม ลองใหม่อีกครั้ง")
+		return
+	end
+	local finalName = (name ~= "" and name) or ("จุดที่ " .. tostring(nextId))
+	local point = cframeToTable(hrp.CFrame)
+	point.id = nextId
+	point.name = finalName
+	nextId += 1
+	table.insert(points, point)
+
+	saveLocalData() -- เซฟข้อมูลลงเครื่องทันที
+	notify(points, "บันทึกจุด \"" .. finalName .. "\" แล้ว (" .. #points .. "/" .. MAX_POINTS .. ")")
+end
+
+local function doTeleport(id)
+	if usingServer then
+		actionEvent:FireServer("teleport", {id = id})
+		return
+	end
+	local hrp = getHRP()
+	if not hrp then return end
+	for _, point in ipairs(points) do
+		if point.id == id then
+			hrp.CFrame = tableToCFrame(point)
+			notify(points, "วาปไปจุด \"" .. point.name .. "\" แล้ว")
+			break
+		end
+	end
+end
+
+local function doDelete(id)
+	if usingServer then
+		actionEvent:FireServer("delete", {id = id})
+		return
+	end
+	for i, point in ipairs(points) do
+		if point.id == id then
+			table.remove(points, i)
+			saveLocalData() -- อัพเดทไฟล์
+			notify(points, "ลบจุดแล้ว")
+			break
+		end
+	end
+end
+
+local function doRename(id, newName)
+	if usingServer then
+		actionEvent:FireServer("rename", {id = id, newName = newName})
+		return
+	end
+	for _, point in ipairs(points) do
+		if point.id == id and newName ~= "" then
+			point.name = newName
+			saveLocalData() -- อัพเดทไฟล์
+			notify(points, "เปลี่ยนชื่อแล้ว")
+			break
+		end
+	end
+end
+
+local function doUpdate(id)
+	if usingServer then
+		actionEvent:FireServer("update", {id = id})
+		return
+	end
+	local hrp = getHRP()
+	if not hrp then
+		notify(points, "ตัวละครยังไม่พร้อม ลองใหม่อีกครั้ง")
+		return
+	end
+	for _, point in ipairs(points) do
+		if point.id == id then
+			local newCF = cframeToTable(hrp.CFrame)
+			point.x, point.y, point.z = newCF.x, newCF.y, newCF.z
+			point.rx, point.ry, point.rz = newCF.rx, newCF.ry, newCF.rz
+			saveLocalData() -- อัพเดทไฟล์
+			notify(points, "อัพเดตพิกัดแล้ว")
+			break
+		end
+	end
+end
+
+local function doRequestList()
+	if usingServer then
+		actionEvent:FireServer("requestList", {})
+		return
+	end
+	notify(points, nil)
+end
+
+if usingServer then
+	syncEvent.OnClientEvent:Connect(function(newPoints, message)
+		points = newPoints or {}
+		notify(points, message)
+	end)
+else
+	loadLocalData() -- โหลดข้อมูลจากไฟล์ตอนรันสคริปต์
+	if hasFileIO then
+		print("[CheckpointUI] ใช้โหมดเซฟลงเครื่อง (Workspace ของ Executor) - ข้อมูลจะอยู่ถาวรแม้ออกเกม")
+	else
+		warn("[CheckpointUI] ตัวรันไม่รองรับ writefile/readfile/isfile ครบทั้งสามฟังก์ชัน -> ใช้โหมดเก็บข้อมูลชั่วคราว (หายเมื่อออกเกม)")
+	end
+end
+
+-- ==========================================================
+-- UI
+-- ==========================================================
+local selectedId = nil
+local toggleMenu
+
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "CheckpointUI"
+screenGui.ResetOnSpawn = false
+screenGui.IgnoreGuiInset = true
+screenGui.Parent = player:WaitForChild("PlayerGui")
+
+-- ===== ไอคอนลอย ลากได้ + tap เปิดปิด =====
+local icon = Instance.new("TextButton")
+icon.Name = "ToggleIcon"
+icon.Size = UDim2.new(0, 60, 0, 60)
+icon.Position = UDim2.new(1, -80, 1, -220)
+icon.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+icon.Text = "📍"
+icon.TextScaled = true
+icon.ZIndex = 10
+icon.Parent = screenGui
+
+local iconCorner = Instance.new("UICorner")
+iconCorner.CornerRadius = UDim.new(1, 0)
+iconCorner.Parent = icon
+
+local dragging = false
+local dragInput = nil
+local dragStart, startPos
+local dragDistance = 0
+local DRAG_THRESHOLD = 8
+
+local function updateIconDrag(input)
+	local delta = input.Position - dragStart
+	dragDistance = math.max(dragDistance, delta.Magnitude)
+	local viewport = workspace.CurrentCamera.ViewportSize
+	local newX = math.clamp(startPos.X.Offset + delta.X, 0, viewport.X - icon.AbsoluteSize.X)
+	local newY = math.clamp(startPos.Y.Offset + delta.Y, 0, viewport.Y - icon.AbsoluteSize.Y)
+	icon.Position = UDim2.new(0, newX, 0, newY)
+end
+
+-- แก้บั๊ก multi-touch: เดิมเช็คแค่ UserInputType ทำให้นิ้วที่สอง (หรือการแตะที่อื่นบนจอ)
+-- ไปสั่ง dragging=false ก่อนนิ้วแรกปล่อยจริง และ InputChanged เดิมรับ "ทุก" การขยับของ Touch
+-- ทั่วจอ (ไม่ใช่แค่ที่กำลังลากไอคอน) ทำให้ไอคอนกระตุกเวลามีสองนิ้วบนจอ
+-- ตอนนี้ผูกกับ input object ตัวเดียวที่เริ่มลากจริง (dragInput) ตลอดทั้ง gesture
+icon.InputBegan:Connect(function(input)
+	if dragging then return end -- กำลังลากอยู่แล้ว ไม่รับนิ้ว/ปุ่มใหม่ซ้อน
+	if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+		dragging = true
+		dragStart = input.Position
+		startPos = icon.Position
+		dragDistance = 0
+		dragInput = input
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if not dragging then return end
+	-- Touch ใช้ input object เดิมตลอด gesture เทียบ reference ได้ตรงๆ
+	-- Mouse ใช้ MouseMovement event แยกต่างหาก (มีเมาส์แค่ตัวเดียวจึงปลอดภัย ไม่ต้องเทียบ reference)
+	if input == dragInput or input.UserInputType == Enum.UserInputType.MouseMovement then
+		updateIconDrag(input)
+	end
+end)
+
+icon.InputEnded:Connect(function(input)
+	if not dragging then return end
+	if input == dragInput then
+		dragging = false
+		if dragDistance < DRAG_THRESHOLD then
+			toggleMenu()
+		end
+	end
+end)
+
+-- ===== เมนูหลัก =====
+-- เพิ่มความสูงจาก 320 -> 360 เพื่อแก้ปัญหาปุ่มในหน้ารายละเอียดจุด (updateBtn ที่ y=244+40=284)
+-- ล้นออกนอกกรอบเมนูเดิม (เดิม rightPanel เหลือพื้นที่ใช้งานจริงแค่ ~258px)
+local menuFrame = Instance.new("Frame")
+menuFrame.Size = UDim2.new(0, 420, 0, 360)
+menuFrame.Position = UDim2.new(0.5, -210, 0.5, -180)
+menuFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+menuFrame.Visible = false
+menuFrame.Parent = screenGui
+Instance.new("UICorner", menuFrame).CornerRadius = UDim.new(0, 12)
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(1, 0, 0, 36)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "จุดวาป" .. (usingServer and "" or (hasFileIO and " (บันทึกถาวร)" or " (ชั่วคราว)"))
+titleLabel.TextColor3 = Color3.new(1,1,1)
+titleLabel.Font = Enum.Font.GothamBold
+titleLabel.TextScaled = true
+titleLabel.Parent = menuFrame
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 30, 0, 30)
+closeBtn.Position = UDim2.new(1, -36, 0, 4)
+closeBtn.BackgroundColor3 = Color3.fromRGB(60,20,20)
+closeBtn.Text = "X"
+closeBtn.TextColor3 = Color3.new(1,1,1)
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextScaled = true
+closeBtn.Parent = menuFrame
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 8)
+closeBtn.MouseButton1Click:Connect(function() menuFrame.Visible = false end)
+
+local leftList = Instance.new("ScrollingFrame")
+leftList.Size = UDim2.new(0, 140, 1, -46)
+leftList.Position = UDim2.new(0, 0, 0, 40)
+leftList.BackgroundColor3 = Color3.fromRGB(18,18,22)
+leftList.BorderSizePixel = 0
+leftList.ScrollBarThickness = 6
+leftList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+leftList.CanvasSize = UDim2.new(0,0,0,0)
+leftList.Parent = menuFrame
+
+-- ตั้ง SortOrder ให้ชัดเจนว่าเรียงตาม LayoutOrder (homeBtn=0, จุดต่างๆ=1,2,3...)
+-- กันปัญหาลำดับปุ่มสลับกันถ้า default ของ engine ไม่ตรงกับที่คาดไว้
+local leftListLayout = Instance.new("UIListLayout", leftList)
+leftListLayout.Padding = UDim.new(0, 4)
+leftListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
+local homeBtn = Instance.new("TextButton")
+homeBtn.Size = UDim2.new(1, -8, 0, 40)
+homeBtn.Position = UDim2.new(0, 4, 0, 0)
+homeBtn.BackgroundColor3 = Color3.fromRGB(50,90,180)
+homeBtn.Text = "หน้าหลัก"
+homeBtn.TextColor3 = Color3.new(1,1,1)
+homeBtn.Font = Enum.Font.GothamBold
+homeBtn.TextScaled = true
+homeBtn.LayoutOrder = 0
+homeBtn.Parent = leftList
+
+local rightPanel = Instance.new("Frame")
+rightPanel.Size = UDim2.new(1, -148, 1, -46)
+rightPanel.Position = UDim2.new(0, 146, 0, 40)
+rightPanel.BackgroundColor3 = Color3.fromRGB(30,30,36)
+rightPanel.Parent = menuFrame
+Instance.new("UICorner", rightPanel).CornerRadius = UDim.new(0, 8)
+
+local homePanel = Instance.new("Frame")
+homePanel.Size = UDim2.new(1, -16, 1, -16)
+homePanel.Position = UDim2.new(0, 8, 0, 8)
+homePanel.BackgroundTransparency = 1
+homePanel.Parent = rightPanel
+
+local coordLabel = Instance.new("TextLabel")
+coordLabel.Size = UDim2.new(1, 0, 0, 50)
+coordLabel.BackgroundTransparency = 1
+coordLabel.Text = "พิกัดปัจจุบัน: -"
+coordLabel.TextColor3 = Color3.new(1,1,1)
+coordLabel.Font = Enum.Font.Gotham
+coordLabel.TextScaled = true
+coordLabel.TextWrapped = true
+coordLabel.Parent = homePanel
+
+local countLabel = Instance.new("TextLabel")
+countLabel.Size = UDim2.new(1, 0, 0, 24)
+countLabel.Position = UDim2.new(0, 0, 0, 50)
+countLabel.BackgroundTransparency = 1
+countLabel.Text = "จุดที่บันทึก: 0/" .. MAX_POINTS
+countLabel.TextColor3 = Color3.fromRGB(200,200,200)
+countLabel.Font = Enum.Font.Gotham
+countLabel.TextScaled = true
+countLabel.Parent = homePanel
+
+local nameBox = Instance.new("TextBox")
+nameBox.Size = UDim2.new(1, 0, 0, 40)
+nameBox.Position = UDim2.new(0, 0, 0, 82)
+nameBox.PlaceholderText = "ตั้งชื่อจุด เช่น ถ้ำมังกร"
+nameBox.Text = ""
+nameBox.TextColor3 = Color3.new(1,1,1)
+nameBox.BackgroundColor3 = Color3.fromRGB(45,45,52)
+nameBox.Font = Enum.Font.Gotham
+nameBox.TextScaled = true
+nameBox.ClearTextOnFocus = false
+nameBox.Parent = homePanel
+Instance.new("UICorner", nameBox).CornerRadius = UDim.new(0, 6)
+
+local saveBtn = Instance.new("TextButton")
+saveBtn.Size = UDim2.new(1, 0, 0, 44)
+saveBtn.Position = UDim2.new(0, 0, 0, 132)
+saveBtn.BackgroundColor3 = Color3.fromRGB(40,150,80)
+saveBtn.Text = "บันทึกพิกัดนี้"
+saveBtn.TextColor3 = Color3.new(1,1,1)
+saveBtn.Font = Enum.Font.GothamBold
+saveBtn.TextScaled = true
+saveBtn.Parent = homePanel
+Instance.new("UICorner", saveBtn).CornerRadius = UDim.new(0, 8)
+
+saveBtn.MouseButton1Click:Connect(function()
+	doCreate(nameBox.Text)
+	nameBox.Text = ""
+end)
+
+local pointPanel = Instance.new("Frame")
+pointPanel.Size = UDim2.new(1, -16, 1, -16)
+pointPanel.Position = UDim2.new(0, 8, 0, 8)
+pointPanel.BackgroundTransparency = 1
+pointPanel.Visible = false
+pointPanel.Parent = rightPanel
+
+local pointInfoLabel = Instance.new("TextLabel")
+pointInfoLabel.Size = UDim2.new(1, 0, 0, 50)
+pointInfoLabel.BackgroundTransparency = 1
+pointInfoLabel.Text = ""
+pointInfoLabel.TextColor3 = Color3.new(1,1,1)
+pointInfoLabel.Font = Enum.Font.GothamBold
+pointInfoLabel.TextScaled = true
+pointInfoLabel.TextWrapped = true
+pointInfoLabel.Parent = pointPanel
+
+local renameBox = Instance.new("TextBox")
+renameBox.Size = UDim2.new(1, 0, 0, 36)
+renameBox.Position = UDim2.new(0, 0, 0, 56)
+renameBox.PlaceholderText = "ชื่อใหม่..."
+renameBox.Text = ""
+renameBox.TextColor3 = Color3.new(1,1,1)
+renameBox.BackgroundColor3 = Color3.fromRGB(45,45,52)
+renameBox.Font = Enum.Font.Gotham
+renameBox.TextScaled = true
+renameBox.ClearTextOnFocus = false
+renameBox.Visible = false
+renameBox.Parent = pointPanel
+Instance.new("UICorner", renameBox).CornerRadius = UDim.new(0,6)
+
+local function makeActionButton(text, yPos, color)
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(1, 0, 0, 40)
+	btn.Position = UDim2.new(0, 0, 0, yPos)
+	btn.BackgroundColor3 = color
+	btn.Text = text
+	btn.TextColor3 = Color3.new(1,1,1)
+	btn.Font = Enum.Font.GothamBold
+	btn.TextScaled = true
+	btn.Parent = pointPanel
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0,8)
+	return btn
+end
+
+local teleportBtn = makeActionButton("วาปไปจุดนี้", 100, Color3.fromRGB(40,120,200))
+local deleteBtn   = makeActionButton("ลบ", 148, Color3.fromRGB(180,50,50))
+local renameBtn   = makeActionButton("เปลี่ยนชื่อ", 196, Color3.fromRGB(150,120,40))
+local updateBtn   = makeActionButton("บันทึกพิกัดใหม่", 244, Color3.fromRGB(90,90,180))
+
+teleportBtn.MouseButton1Click:Connect(function()
+	if selectedId then doTeleport(selectedId) end
+end)
+
+deleteBtn.MouseButton1Click:Connect(function()
+	if selectedId then doDelete(selectedId) end
+end)
+
+local renameConfirming = false
+renameBtn.MouseButton1Click:Connect(function()
+	if not selectedId then return end
+	if not renameConfirming then
+		renameConfirming = true
+		renameBox.Visible = true
+		renameBox.Text = ""
+		renameBtn.Text = "ยืนยันชื่อใหม่"
+	else
+		if renameBox.Text ~= "" then
+			doRename(selectedId, renameBox.Text)
+		end
+		renameConfirming = false
+		renameBox.Visible = false
+		renameBtn.Text = "เปลี่ยนชื่อ"
+	end
+end)
+
+updateBtn.MouseButton1Click:Connect(function()
+	if selectedId then doUpdate(selectedId) end
+end)
+
+local pointButtons = {}
+local currentPoints = {}
+
+local function selectHome()
+	selectedId = nil
+	homePanel.Visible = true
+	pointPanel.Visible = false
+	homeBtn.BackgroundColor3 = Color3.fromRGB(50,90,180)
+	for _, b in pairs(pointButtons) do b.BackgroundColor3 = Color3.fromRGB(45,45,52) end
+end
+
+local function selectPoint(id)
+	selectedId = id
+	homePanel.Visible = false
+	pointPanel.Visible = true
+	renameConfirming = false
+	renameBox.Visible = false
+	renameBtn.Text = "เปลี่ยนชื่อ"
+	homeBtn.BackgroundColor3 = Color3.fromRGB(45,45,52)
+
+	for _, p in ipairs(currentPoints) do
+		if p.id == id then
+			pointInfoLabel.Text = p.name .. "\n(" .. math.floor(p.x) .. ", " .. math.floor(p.y) .. ", " .. math.floor(p.z) .. ")"
+			break
+		end
+	end
+	for pid, b in pairs(pointButtons) do
+		b.BackgroundColor3 = (pid == id) and Color3.fromRGB(50,90,180) or Color3.fromRGB(45,45,52)
+	end
+end
+
+homeBtn.MouseButton1Click:Connect(selectHome)
+
+local function rebuildList()
+	for _, b in pairs(pointButtons) do b:Destroy() end
+	pointButtons = {}
+
+	countLabel.Text = "จุดที่บันทึก: " .. #currentPoints .. "/" .. MAX_POINTS
+	saveBtn.BackgroundColor3 = (#currentPoints >= MAX_POINTS) and Color3.fromRGB(90,90,90) or Color3.fromRGB(40,150,80)
+
+	for i, p in ipairs(currentPoints) do
+		local btn = Instance.new("TextButton")
+		btn.Size = UDim2.new(1, -8, 0, 40)
+		btn.Position = UDim2.new(0, 4, 0, 0)
+		btn.BackgroundColor3 = Color3.fromRGB(45,45,52)
+		btn.Text = p.name
+		btn.TextColor3 = Color3.new(1,1,1)
+		btn.Font = Enum.Font.Gotham
+		btn.TextScaled = true
+		btn.TextWrapped = true
+		btn.LayoutOrder = i
+		btn.Parent = leftList
+		Instance.new("UICorner", btn).CornerRadius = UDim.new(0,6)
+
+		btn.MouseButton1Click:Connect(function() selectPoint(p.id) end)
+		pointButtons[p.id] = btn
+	end
+
+	if selectedId then
+		local found = false
+		for _, p in ipairs(currentPoints) do if p.id == selectedId then found = true break end end
+		if found then selectPoint(selectedId) else selectHome() end
+	end
+end
+
+onSyncCallback = function(newPoints, message)
+	currentPoints = newPoints or {}
+	rebuildList()
+	if message then
+		print("[Checkpoint] " .. message)
+	end
+end
+
+toggleMenu = function()
+	menuFrame.Visible = not menuFrame.Visible
+	if menuFrame.Visible then
+		doRequestList()
+	end
+end
+
+selectHome()
+doRequestList()
+
+local lastUpdate = 0
+RunService.Heartbeat:Connect(function()
+	if not menuFrame.Visible or selectedId ~= nil then return end
+	local now = os.clock()
+	if now - lastUpdate < 0.15 then return end
+	lastUpdate = now
+	local character = player.Character
+	local hrp = character and character:FindFirstChild("HumanoidRootPart")
+	if hrp then
+		local pos = hrp.Position
+		coordLabel.Text = string.format("พิกัดปัจจุบัน:\nX: %d  Y: %d  Z: %d", pos.X, pos.Y, pos.Z)
+	end
+end)
