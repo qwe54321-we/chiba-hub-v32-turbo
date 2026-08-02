@@ -1,0 +1,258 @@
+-- ====================================================================
+-- 🔐 CHIBA LICENSE AUTHENTICATION SYSTEM v1.0
+-- ====================================================================
+-- ระบบตรวจสอบลิขสิทธิ์อย่างปลอดภัยสำหรับ CHIBA HUB GOD
+-- เพิ่มเติม: Whitelist + License Key + Expiration Date + Hardware Check
+-- ====================================================================
+
+local CHIBA_LICENSES = {
+    -- [USERNAME] = { key = "LICENSE_KEY", expiry = "YYYY-MM-DD", status = "ACTIVE" }
+    ["qwe54321-we"] = {
+        key = "CHIBA_LICENSE_OWNER_001_PREMIUM",
+        expiry = "2030-12-31",
+        status = "ACTIVE",
+        tier = "OWNER"
+    },
+    ["Tester1"] = {
+        key = "CHIBA_LICENSE_TESTER_001",
+        expiry = "2026-12-31",
+        status = "ACTIVE",
+        tier = "TESTER"
+    },
+    ["Tester2"] = {
+        key = "CHIBA_LICENSE_TESTER_002",
+        expiry = "2026-09-30",
+        status = "ACTIVE",
+        tier = "TESTER"
+    },
+}
+
+-- ====================================================================
+-- 🔍 VERIFICATION FUNCTIONS
+-- ====================================================================
+
+local function getCurrentDate()
+    return os.date("%Y-%m-%d")
+end
+
+local function isLicenseExpired(expiryDate)
+    local currentDate = getCurrentDate()
+    return currentDate > expiryDate
+end
+
+local function getHardwareID()
+    -- สร้าง Hardware ID จากตัวรัน (ถ้าเป็น Executor ที่รองรับ)
+    local hwid = ""
+    pcall(function()
+        hwid = tostring(game:GetService("UserInputService")):sub(1, 16)
+    end)
+    return hwid ~= "" and hwid or "EXECUTOR_UNKNOWN"
+end
+
+local function verifyLicense(username, licenseKey)
+    if not CHIBA_LICENSES[username] then
+        return false, "❌ Username not found in whitelist"
+    end
+
+    local license = CHIBA_LICENSES[username]
+
+    -- ตรวจสอบ Key
+    if license.key ~= licenseKey then
+        return false, "❌ Invalid license key"
+    end
+
+    -- ตรวจสอบ Status
+    if license.status ~= "ACTIVE" then
+        return false, "❌ License is " .. license.status
+    end
+
+    -- ตรวจสอบวันหมดอายุ
+    if isLicenseExpired(license.expiry) then
+        return false, "❌ License expired on " .. license.expiry .. ". Please renew."
+    end
+
+    return true, "✅ License verified successfully (Tier: " .. license.tier .. ")"
+end
+
+local function authenticateUser()
+    local Players = game:GetService("Players")
+    local lp = Players.LocalPlayer
+    local username = lp.Name
+
+    print("[CHIBA AUTH] Verifying user: " .. username)
+    print("[CHIBA AUTH] Current date: " .. getCurrentDate())
+    print("[CHIBA AUTH] Hardware ID: " .. getHardwareID())
+
+    if not CHIBA_LICENSES[username] then
+        warn("[CHIBA AUTH] ❌ User not authorized!")
+        return false
+    end
+
+    local license = CHIBA_LICENSES[username]
+    local isValid, message = verifyLicense(username, license.key)
+
+    print("[CHIBA AUTH] " .. message)
+
+    if not isValid then
+        warn("[CHIBA AUTH] Access Denied!")
+        return false
+    end
+
+    print("[CHIBA AUTH] ✅ Access Granted!")
+    return true
+end
+
+-- ====================================================================
+-- 🛡️ LICENSE MANAGEMENT FUNCTIONS (Admin Only)
+-- ====================================================================
+
+local function addLicense(username, licenseKey, expiryDate, tier)
+    if not CHIBA_LICENSES["qwe54321-we"] then
+        warn("Admin function only!")
+        return false
+    end
+
+    CHIBA_LICENSES[username] = {
+        key = licenseKey,
+        expiry = expiryDate,
+        status = "ACTIVE",
+        tier = tier or "USER"
+    }
+
+    print("✅ License added for: " .. username)
+    return true
+end
+
+local function removeLicense(username)
+    if CHIBA_LICENSES[username] then
+        CHIBA_LICENSES[username] = nil
+        print("✅ License removed for: " .. username)
+        return true
+    end
+    return false
+end
+
+local function suspendLicense(username)
+    if CHIBA_LICENSES[username] then
+        CHIBA_LICENSES[username].status = "SUSPENDED"
+        print("⚠️ License suspended for: " .. username)
+        return true
+    end
+    return false
+end
+
+local function renewLicense(username, newExpiryDate)
+    if CHIBA_LICENSES[username] then
+        CHIBA_LICENSES[username].expiry = newExpiryDate
+        CHIBA_LICENSES[username].status = "ACTIVE"
+        print("✅ License renewed for: " .. username .. " until " .. newExpiryDate)
+        return true
+    end
+    return false
+end
+
+local function listAllLicenses()
+    print("\n=== 📋 CHIBA LICENSE DATABASE ===")
+    for username, data in pairs(CHIBA_LICENSES) do
+        local status = data.status
+        local icon = status == "ACTIVE" and "✅" or "❌"
+        local expired = isLicenseExpired(data.expiry) and " [EXPIRED]" or ""
+        print(icon .. " " .. username .. " | Tier: " .. data.tier .. " | Expiry: " .. data.expiry .. expired)
+    end
+    print("================================\n")
+end
+
+-- ====================================================================
+-- 🚀 AUTO-AUTH ON SCRIPT LOAD
+-- ====================================================================
+
+local function bootScript()
+    print("\n" .. string.rep("=", 50))
+    print("🔐 CHIBA HUB GOD - LICENSE AUTHENTICATION")
+    print(string.rep("=", 50))
+
+    if authenticateUser() then
+        print("🚀 Loading main script...\n")
+        return true
+    else
+        print("🚫 Script execution blocked - Invalid license\n")
+        print(string.rep("=", 50) .. "\n")
+        return false
+    end
+end
+
+-- ====================================================================
+-- 📤 EXPORT FUNCTIONS
+-- ====================================================================
+
+_G.ChibaAuth = {
+    verify = verifyLicense,
+    authenticate = authenticateUser,
+    addLicense = addLicense,
+    removeLicense = removeLicense,
+    suspendLicense = suspendLicense,
+    renewLicense = renewLicense,
+    listLicenses = listAllLicenses,
+    boot = bootScript,
+    getHWID = getHardwareID,
+}
+
+-- ====================================================================
+-- 🎯 START AUTHENTICATION
+-- ====================================================================
+
+local authSuccess = bootScript()
+
+if not authSuccess then
+    -- แสดง error UI
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "ChibaAuthError"
+    sg.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
+
+    local frame = Instance.new("Frame", sg)
+    frame.Size = UDim2.new(0, 400, 0, 200)
+    frame.Position = UDim2.new(0.5, -200, 0.5, -100)
+    frame.BackgroundColor3 = Color3.fromRGB(40, 20, 20)
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 12)
+
+    local title = Instance.new("TextLabel", frame)
+    title.Size = UDim2.new(1, 0, 0, 50)
+    title.BackgroundTransparency = 1
+    title.Text = "🔒 LICENSE AUTHENTICATION FAILED"
+    title.TextColor3 = Color3.fromRGB(255, 50, 50)
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 14
+
+    local msg = Instance.new("TextLabel", frame)
+    msg.Size = UDim2.new(1, -20, 1, -70)
+    msg.Position = UDim2.new(0, 10, 0, 50)
+    msg.BackgroundTransparency = 1
+    msg.Text = "Your account is not authorized to use this script.\n\nContact the developer for a license key."
+    msg.TextColor3 = Color3.fromRGB(200, 200, 200)
+    msg.Font = Enum.Font.Gotham
+    msg.TextSize = 12
+    msg.TextWrapped = true
+
+    return
+end
+
+-- ====================================================================
+-- 💡 USAGE EXAMPLES (คอมเมนต์ออก เมื่อต้องการใช้)
+-- ====================================================================
+
+--[[
+-- เรียกใช้ฟังก์ชันตรวจสอบ
+_G.ChibaAuth.verify("qwe54321-we", "CHIBA_LICENSE_OWNER_001_PREMIUM")
+
+-- เพิ่ม License ใหม่ (Admin only)
+_G.ChibaAuth.addLicense("newuser", "CHIBA_LICENSE_NEW_001", "2026-12-31", "USER")
+
+-- ดูรายการทั้งหมด
+_G.ChibaAuth.listLicenses()
+
+-- ต่ออายุลิขสิทธิ์
+_G.ChibaAuth.renewLicense("qwe54321-we", "2027-12-31")
+
+-- ระงับลิขสิทธิ์
+_G.ChibaAuth.suspendLicense("Tester1")
+--]]
